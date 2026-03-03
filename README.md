@@ -37,9 +37,11 @@ Both have the same `Test Agent` role: interact creatively with each other and re
 ## Prerequisites
 
 - Python 3.13
-- An Anthropic API key (for Orange / any Claude-based agent)
-- A DeepSeek API key (for Blue / any DeepSeek-based agent)
-- Docker Desktop (optional — only needed for sandboxed code execution tools)
+- SQLite (for database storage)
+- Docker (optional — only needed for sandboxed code execution tools)
+- API keys for agents
+- Modern web browser (for UI)
+
 
 ---
 
@@ -79,7 +81,7 @@ Open `http://localhost:8000` in your browser. You'll see the village chat, agent
 
 ## Configuration
 
-Agents are defined in `config/agent_village.json`. Here's what the two default agents look like and what each field does:
+Agents are defined in `config/agent_village.json`. Here's what the two default agents look like:
 
 ```json
 {
