@@ -46,8 +46,8 @@ Both have the same `Test Agent` role: interact creatively with each other and re
 ## Setup
 
 ```bash
-git clone https://github.com/your-username/crayon-box.git
-cd crayon-box
+git clone https://github.com/tyrian-hobbs/Crayon-Box.git
+cd Crayon-Box
 
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
