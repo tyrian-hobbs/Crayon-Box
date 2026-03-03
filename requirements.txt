@@ -1,0 +1,63 @@
+# Core dependencies
+python-dotenv==1.0.0
+pydantic>=2.3.0
+# asyncio removed: it is part of Python's stdlib since 3.4 and must not be installed from PyPI
+aiohttp>=3.9.0
+
+# FastAPI and web dependencies
+fastapi>=0.110.0
+uvicorn>=0.27.0
+jinja2==3.1.2
+websockets>=11.0
+python-multipart>=0.0.9
+
+# Database
+sqlalchemy>=2.0.15
+aiosqlite==0.19.0
+# pysqlite3 removed: no Python 3.13 wheels exist for Windows; use the built-in sqlite3 module instead
+
+# LLM and vectorstore
+# WARNING: langchain 0.1+ has breaking API changes vs 0.0.267 — your existing code will need updates
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.20
+langchain-openai>=0.1.0
+langchain-anthropic>=0.1.0
+# WARNING: openai 1.x has a completely different API vs 0.28 — your existing code will need updates
+openai>=1.0.0
+# WARNING: anthropic 0.20+ has a different client API vs 0.5 — your existing code will need updates
+anthropic>=0.20.0
+chromadb>=0.5.0
+sentence-transformers>=2.3.0
+
+# Numerical and scientific
+numpy>=1.26.0
+# torch 2.4+ is the first release with official Python 3.13 support
+torch>=2.4.0
+# scipy 1.11+ supports Python 3.13
+scipy>=1.11.0
+
+# Container and execution
+docker>=6.1.2
+# docker-compose (the Python package) is deprecated; use the Docker CLI plugin instead
+# Remove the line below if you have Docker Desktop installed — `docker compose` is already available
+# docker-compose==1.29.2
+
+# Utilities
+python-dateutil==2.8.2
+rich>=13.3.5
+typer>=0.9.0
+tqdm==4.65.0
+tenacity==8.2.2
+
+# Testing
+pytest>=7.3.1
+pytest-asyncio>=0.21.0
+black>=23.3.0
+mypy>=1.3.0
+flake8>=6.0.0
+
+# Monitoring and logging
+prometheus-client==0.16.0
+structlog>=23.1.0
+python-json-logger==2.0.7
