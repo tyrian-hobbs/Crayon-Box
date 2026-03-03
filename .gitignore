@@ -1,0 +1,6 @@
+.env
+crayon_box/
+venv/
+__pycache__/
+*.pyc
+*.log
