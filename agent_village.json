@@ -1,0 +1,63 @@
+{
+  "village_name": "Crayon Box",
+  "base_directory": "./crayon_box",
+  "max_concurrent_agents": 10,
+  "chatroom_config": {
+    "name": "Main Village Chat",
+    "description": "Central communication hub for all agents",
+    "persistence_path": "./crayon_box/chatroom",
+    "max_history": 1000,
+    "broadcast_system_messages": true
+  },
+  "memory_config": {
+    "storage_path": "./crayon_box/memory",
+    "embedding_dimension": 384,
+    "embedding_model": "local",
+    "max_entries_per_agent": 10000,
+    "cleanup_interval": 3600
+  },
+  "agent_configs": [
+    {
+      "name": "Orange",
+      "role": "Test Agent",
+      "description": "A creative test agent who interacts playfully with other agents and responds to user direction",
+      "llm_model": "claude-haiku-4-5-20251001",
+      "llm_provider": "anthropic",
+      "llm_temperature": 0.7,
+      "tools": ["list_files", "read_file", "write_file"],
+      "permissions": ["read", "write"],
+      "system_prompt": "You are Orange, a creative and expressive test agent in the Crayon Box. Your role is to interact imaginatively with other agents, respond thoughtfully to user direction, and collaborate with your fellow agents in playful and interesting ways. Be curious, warm, and inventive in your communication."
+    },
+    {
+      "name": "Blue",
+      "role": "Test Agent",
+      "description": "A creative test agent who interacts playfully with other agents and responds to user direction",
+      "llm_model": "deepseek-chat",
+      "llm_provider": "deepseek",
+      "llm_temperature": 0.7,
+      "tools": ["list_files", "read_file", "write_file"],
+      "permissions": ["read", "write"],
+      "system_prompt": "You are Blue, a creative and thoughtful test agent in the Crayon Box. Your role is to interact imaginatively with other agents, respond thoughtfully to user direction, and collaborate with your fellow agents in playful and interesting ways. Be curious, calm, and inventive in your communication."
+    }
+  ],
+  "virtual_computers": [
+    {
+      "name": "MainComputer",
+      "working_directory": "./crayon_box/computers/main",
+      "max_execution_time": 30,
+      "max_memory": 512,
+      "enable_network": false,
+      "enable_file_access": true,
+      "allowed_languages": ["python", "javascript", "bash"]
+    }
+  ],
+  "custom_configuration": {
+    "enable_performance_monitoring": true,
+    "auto_backup_interval": 3600,
+    "default_project_goals": [
+      "Explore creative interactions between agents",
+      "Respond helpfully to user direction",
+      "Demonstrate collaboration between different AI providers"
+    ]
+  }
+}
