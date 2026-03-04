@@ -140,7 +140,7 @@ class AgentVillage:
         
         logger.info(f"Initialized Agent Village: {self.village_name}")
     
-    async def _create_agent(self, config: AgentConfig) -> Optional[Agent]:
+    async def _create_agent(self, config: AgentConfig, start_paused: bool = False) -> Optional[Agent]:
         """
         Create and initialize an agent
         
@@ -215,7 +215,11 @@ class AgentVillage:
             
             # Add to virtual space (default to main room)
             await self.virtual_space.move_agent_to_room(agent.name, "main")
-            
+
+            # Pause before the run loop starts if requested
+            if start_paused:
+                agent.pause()
+
             logger.info(f"Created agent {agent.name} with role {agent.role}")
             return agent
         except Exception as e:
@@ -275,11 +279,11 @@ class AgentVillage:
         try:
             logger.info(f"Starting Agent Village: {self.village_name}")
             
-            # Initialize agents from config
+            # Initialize agents from config 
             if self.config.agent_configs:
                 for agent_config_dict in self.config.agent_configs:
                     agent_config = AgentConfig(**agent_config_dict)
-                    await self._create_agent(agent_config)
+                    await self._create_agent(agent_config, start_paused=True)
             
             # Initialize database connections
             await self.chatroom.initialize_db()
@@ -299,8 +303,9 @@ class AgentVillage:
             
             await self.chatroom.process_message(startup_message)
             
-            # Start all agents
-            self.status = "running"
+            # Village starts paused; agents will block on their _paused event
+            # until the user clicks play in the UI.
+            self.status = "paused"
             await self.chatroom.start_all_agents()
             
             logger.info(f"Agent Village {self.village_name} successfully started")
@@ -357,10 +362,16 @@ class AgentVillage:
             # Create agent config
             agent_config = AgentConfig(**config)
             
-            # Create the agent
-            agent = await self._create_agent(agent_config)
+            # Create the agent — runtime-added agents start immediately regardless
+            # of whether the rest of the village is paused.
+            agent = await self._create_agent(agent_config, start_paused=False)
             
             if agent:
+                # Kick off the agent's run loop as a background task.
+                # (Config-loaded agents are started in bulk by start_all_agents;
+                # runtime-added agents need their own task spawned here.)
+                asyncio.create_task(agent.run())
+
                 # Send system message about new agent
                 new_agent_message = Message(
                     sender="System",
@@ -527,6 +538,34 @@ class AgentVillage:
                 "error": str(e)
             }
     
+    def pause_village(self) -> Dict[str, Any]:
+        """Pause all agents in the village."""
+        if self.status == "paused":
+            return {"success": False, "error": "Village is already paused"}
+        if self.status != "running":
+            return {"success": False, "error": f"Village cannot be paused from state: {self.status}"}
+
+        for agent in self.agents.values():
+            agent.pause()
+
+        self.status = "paused"
+        logger.info(f"Agent Village {self.village_name} paused")
+        return {"success": True, "status": "paused"}
+
+    def resume_village(self) -> Dict[str, Any]:
+        """Resume all paused agents in the village."""
+        if self.status == "running":
+            return {"success": False, "error": "Village is already running"}
+        if self.status != "paused":
+            return {"success": False, "error": f"Village cannot be resumed from state: {self.status}"}
+
+        for agent in self.agents.values():
+            agent.resume()
+
+        self.status = "running"
+        logger.info(f"Agent Village {self.village_name} resumed")
+        return {"success": True, "status": "running"}
+
     def get_status(self) -> Dict[str, Any]:
         """
         Get the current status of the Agent Village

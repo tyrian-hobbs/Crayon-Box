@@ -96,6 +96,9 @@
                     <span class="small" id="uptime">Uptime: 0h 0m 0s</span>
                 </div>
                 <div>
+                    <button class="btn btn-sm btn-outline-success me-1" id="pauseResumeBtn" title="Start agents">
+                        Play
+                    </button>
                     <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#statusModal">
                         System Status
                     </button>
@@ -519,6 +522,12 @@
                     case 'project_created':
                         loadProjects();
                         break;
+                    case 'village_paused':
+                        applyPausedState(true);
+                        break;
+                    case 'village_resumed':
+                        applyPausedState(false);
+                        break;
                     case 'command_executed':
                         // Refresh system status
                         break;
@@ -529,6 +538,57 @@
             
             // Initialize WebSocket connection
             initWebSocket();
+
+            // --- Pause / Resume ---
+            // Village starts paused by default; the status poll will confirm
+            // the real state, but this avoids a flash of the wrong button label.
+            let villagePaused = true;
+            // Tracks whether the village has ever been started this session.
+            // Until it has, the button reads "Play" rather than "Resume".
+            let hasEverPlayed = false;
+
+            const pauseResumeBtn = document.getElementById('pauseResumeBtn');
+
+            function applyPausedState(paused) {
+                villagePaused = paused;
+                if (paused) {
+                    const label = hasEverPlayed ? 'Resume' : 'Play';
+                    const title = hasEverPlayed ? 'Resume agents' : 'Start agents';
+                    pauseResumeBtn.textContent = label;
+                    pauseResumeBtn.title = title;
+                    pauseResumeBtn.classList.remove('btn-outline-warning');
+                    pauseResumeBtn.classList.add('btn-outline-success');
+                } else {
+                    hasEverPlayed = true;
+                    pauseResumeBtn.textContent = 'Pause';
+                    pauseResumeBtn.classList.remove('btn-outline-success');
+                    pauseResumeBtn.classList.add('btn-outline-warning');
+                    pauseResumeBtn.title = 'Pause agents';
+                }
+            }
+
+            pauseResumeBtn.addEventListener('click', function () {
+                const endpoint = villagePaused ? '/api/resume' : '/api/pause';
+                pauseResumeBtn.disabled = true;
+
+                fetch(endpoint, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            applyPausedState(data.status === 'paused');
+                        } else {
+                            console.error('Pause/resume failed:', data.error);
+                            alert('Error: ' + (data.error || 'Unknown error'));
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Pause/resume request failed:', err);
+                        alert('Request failed: ' + err.message);
+                    })
+                    .finally(() => {
+                        pauseResumeBtn.disabled = false;
+                    });
+            });
             
             // Load initial data
             loadStatus();
@@ -556,6 +616,8 @@
             
             // Update status display
             function updateStatusDisplay(status) {
+                // Sync pause button with actual village state
+                applyPausedState(status.status === 'paused');
                 // Update status badge
                 const statusBadge = document.getElementById('status-badge');
                 statusBadge.textContent = status.status.charAt(0).toUpperCase() + status.status.slice(1);

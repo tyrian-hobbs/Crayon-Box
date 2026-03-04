@@ -333,6 +333,10 @@ class Agent(ABC):
         self.message_queue = asyncio.Queue()
         self.response_callbacks: Dict[str, Callable] = {}
         self.dispatch_callback = None  # Set by chatroom to route outgoing messages back
+
+        # Pause control — set means running, clear means paused
+        self._paused = asyncio.Event()
+        self._paused.set()
         
         # System prompt
         self.system_prompt = config.system_prompt
@@ -632,7 +636,14 @@ class Agent(ABC):
         logger.info(f"Agent {self.name} starting continuous operation")
         
         try:
-            while self.status == AgentStatus.ACTIVE:
+            while self.status in (AgentStatus.ACTIVE, AgentStatus.PAUSED):
+                # Block here while paused, without consuming CPU
+                await self._paused.wait()
+
+                # Re-check status after unblocking (could have been terminated while paused)
+                if self.status != AgentStatus.ACTIVE:
+                    break
+
                 # Process one message
                 result = await self.run_perception_cycle()
                 
@@ -647,6 +658,18 @@ class Agent(ABC):
             self.memory.save()
             logger.info(f"Agent {self.name} shutting down, memory saved")
             
+    def pause(self) -> None:
+        """Pause the agent's run loop. In-flight LLM calls complete before the loop suspends."""
+        self._paused.clear()
+        self.status = AgentStatus.PAUSED
+        logger.info(f"Agent {self.name} paused")
+
+    def resume(self) -> None:
+        """Resume a paused agent."""
+        self._paused.set()
+        self.status = AgentStatus.ACTIVE
+        logger.info(f"Agent {self.name} resumed")
+
     def get_metrics(self) -> Dict[str, Any]:
         """
         Get agent performance metrics

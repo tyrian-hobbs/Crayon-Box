@@ -413,6 +413,24 @@ async def get_projects(village: AgentVillage = Depends(get_agent_village)):
     }
 
 
+@app.post("/api/pause")
+async def pause_village(village: AgentVillage = Depends(get_agent_village)):
+    """Pause all agents in the village"""
+    result = village.pause_village()
+    if result.get("success"):
+        await broadcast_to_websockets({"type": "village_paused"})
+    return result
+
+
+@app.post("/api/resume")
+async def resume_village(village: AgentVillage = Depends(get_agent_village)):
+    """Resume all agents in the village"""
+    result = village.resume_village()
+    if result.get("success"):
+        await broadcast_to_websockets({"type": "village_resumed"})
+    return result
+
+
 
 
 @app.get("/api/memories/{agent_name}")

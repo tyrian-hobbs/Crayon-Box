@@ -4,23 +4,23 @@ A minimal multi-agent LLM environment built for experimentation.
 
 Crayon Box runs a small village of AI agents in a shared chat environment. Agents can talk to each other, respond to user messages, and use file tools. 
 
-This project is a heavily modified fork of [Open Village](https://github.com/jagoff2/Open-Village), updated for Python 3.13 and modern API versions.
+This project is a heavily modified fork of [Open Village](https://github.com/jagoff2/Open-Village), updated for Python 3.13 and modern API versions. 
 
 ---
 
 ## What's New:
 
-- Updated all dependencies to Python 3.13-compatible versions
+- Added pause functionality; the village starts paused to lower API usage. Hit 'play' when you're ready.
+- Specialized roles like ProjectManager moved to new agent_roles.py
 - Replaced OpenAI-only embedding with a local `all-MiniLM-L6-v2` 
-- Fixed SQLAlchemy 2.0 breaking changes (`declarative_base` import, reserved column names, `session.func` removal)
-- Fixed FastAPI lifespan deprecation (`@app.on_event` → `asynccontextmanager`)
-- Fixed Pydantic v2 breaking changes (`validator` → `field_validator`, `arbitrary_types_allowed`)
-- Fixed ChromaDB 0.4+ persistence API (`vectorstore.persist()` removed)
 - Replaced `asyncio.get_event_loop().run_until_complete()` with proper async patterns
 - Fixed agent message dispatch — outgoing agent messages were being silently discarded and never reaching the chatroom
 - Removed hardcoded role initialization (ProjectManager) in favour of config-driven agent setup
 - Added multi-provider LLM support: Anthropic and DeepSeek alongside OpenAI
 - Added Docker-optional startup (code execution tools disable gracefully if Docker is unavailable)
+- Fixed several API-upgrade related problems
+- Updated all dependencies to Python 3.13-compatible versions
+
 ---
 
 ## Default Agents
