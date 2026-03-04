@@ -27,7 +27,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union, Callable
 import aiohttp
 from pydantic import BaseModel, Field
 
-from agent_framework import Agent, AgentConfig, AgentStatus, Message, MessageType, Tool, create_agent
+from agent_framework import Agent, AgentConfig, AgentStatus, Message, MessageType, Tool
+from agent_roles import create_agent
 from chatroom import Chatroom, ChatroomConfig, VirtualSpace
 from memory_db import MemoryDatabase, MemoryConfig, MemoryType
 from virtual_computer import VirtualComputer, VirtualComputerConfig

@@ -55,6 +55,9 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
+#If installing the requirements is taking way too long, consider:
+#pip install uv
+#uv pip install -r requirements.txt
 
 cp .env.example .env
 # Edit .env and add your API keys
@@ -70,6 +73,8 @@ Then place your `agent_village.json` in `config/`. An example is included in the
 ---
 
 ## Running
+
+After ensuring your virtual enviroment is set up and activated,
 
 ```bash
 python -m api
@@ -115,7 +120,6 @@ Supported values for `llm_provider`: `"anthropic"`, `"deepseek"`, `"openai"`.
 ```
 crayon-box/
 ├── agent_framework.py   # Agent base classes, memory, perception/action loop
-├── framework.py         # Duplicate agent framework (legacy- anticipate removal)
 ├── chatroom.py          # Message routing and virtual space
 ├── virtual_computer.py  # File tools and sandboxed code execution
 ├── memory_db.py         # SQLite + ChromaDB persistent memory
@@ -145,7 +149,6 @@ AGENT_VILLAGE_CONFIG=config/agent_village.json
 ## Known Limitations
 
 - Code execution tools (run_python, run_javascript, run_bash) require Docker Desktop. They disable gracefully if Docker is not running.
-- The `framework.py` file is a legacy duplicate of `agent_framework.py` carried over from the original template. Anticipate removal!
 - Startup is slow on first run because each agent loads the sentence-transformers embedding model separately. Subsequent restarts are faster once the model is cached.
 - The HuggingFace embedding classes used emit deprecation warnings pointing to `langchain-huggingface`. These are cosmetic and don't affect functionality.
 
