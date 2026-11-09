@@ -19,7 +19,7 @@ from langchain_core.language_models import BaseLLM
 from langchain_core.callbacks import CallbackManager
 from langchain_core.prompts import PromptTemplate
 
-from agent_framework import Agent, AgentConfig, LLMAgent, MessageType
+from agent_framework import Agent, AgentConfig, LLMAgent, MessageType, _llm_retry
 
 logger = logging.getLogger(__name__)
 
@@ -222,15 +222,32 @@ class ProjectManagerAgent(LLMAgent):
 
         project_state_text = json.dumps(self.project_state, indent=2)
 
+        # Build the constraint note for the prompt — these are agents whose
+        # reply we are still awaiting, not social-media-style blocks.
+        blocked_recipients = perception.get("pending_dm_blocked", [])
+        if blocked_recipients:
+            pm_blocked_note = (
+                "## Messaging Constraints — Awaiting Reply\n"
+                "You have sent a direct message to the following agent(s) and are still "
+                "waiting for their reply: "
+                + ", ".join(blocked_recipients)
+                + "\nDo not send them another direct message until they have replied. "
+                "If you still need to reach them, consider a broadcast or wait for their reply."
+            )
+        else:
+            pm_blocked_note = ""
+
         thinking_template = PromptTemplate(
             input_variables=[
                 "system_prompt", "agent_name", "perception",
-                "recent_messages", "project_state", "project_status"
+                "recent_messages", "project_state", "project_status", "blocked_note"
             ],
             template="""
             {system_prompt}
 
             You are currently processing information as {agent_name}, the Project Manager.
+
+            {blocked_note}
 
             ## Project Status:
             {project_status}
@@ -251,6 +268,7 @@ class ProjectManagerAgent(LLMAgent):
             3. Does this require task assignment or status updates?
             4. Are there any issues or risks that need to be addressed?
             5. How can you keep the team aligned and productive?
+            6. Are any of your intended actions prevented by the awaiting-reply constraints above?
 
             Provide your thoughts in a structured format.
             """
@@ -262,18 +280,20 @@ class ProjectManagerAgent(LLMAgent):
             perception=perception_text,
             recent_messages=recent_messages_text,
             project_state=project_state_text,
-            project_status=json.dumps(project_status, indent=2)
+            project_status=json.dumps(project_status, indent=2),
+            blocked_note=pm_blocked_note
         )
 
         try:
-            thoughts_response = await self.llm.ainvoke(thinking_prompt)
+            thoughts_response = await _llm_retry(self.llm.ainvoke)(thinking_prompt)
             thoughts_str = thoughts_response.content.strip()
 
             thoughts = {
                 "raw": thoughts_str,
                 "timestamp": datetime.datetime.now().timestamp(),
                 "perception_id": perception.get("message_id"),
-                "project_status": project_status
+                "project_status": project_status,
+                "pending_dm_blocked": perception.get("pending_dm_blocked", []),
             }
 
             logger.debug(f"ProjectManagerAgent {self.name} generated thoughts for message {perception.get('message_id')}")
@@ -308,15 +328,36 @@ class ProjectManagerAgent(LLMAgent):
         project_status = thoughts.get("project_status", {})
         project_status_text = json.dumps(project_status, indent=2)
 
+        # Build the constraint section for the PM prompt — these are agents whose
+        # reply we are still awaiting, not social-media-style blocks.
+        # Read live from self.pending_messages (same reason as LLMAgent.decide_action:
+        # the thoughts dict value is one cycle stale).
+        blocked_recipients = [
+            r for r, ids in self.pending_messages.items() if ids
+        ]
+        if blocked_recipients:
+            pm_constraint_section = (
+                "## Messaging Constraint — Awaiting Reply\n"
+                "You have sent a direct message to the following agent(s) and are still "
+                "waiting for their reply: " + ", ".join(blocked_recipients) + ".\n"
+                "Do not choose action_type=\'send_message\' with any of those agents as the "
+                "recipient until they have replied.  If your only useful action would be "
+                "to DM one of them, choose no_action and state the reason."
+            )
+        else:
+            pm_constraint_section = ""
+
         decision_template = PromptTemplate(
             input_variables=[
                 "system_prompt", "agent_name", "thoughts",
-                "tools", "project_status"
+                "tools", "project_status", "constraint_section"
             ],
             template="""
             {system_prompt}
 
             You are currently deciding on actions as {agent_name}, the Project Manager.
+
+            {constraint_section}
 
             ## Project Status:
             {project_status}
@@ -389,11 +430,12 @@ class ProjectManagerAgent(LLMAgent):
             agent_name=self.name,
             thoughts=thoughts_text,
             tools=tools_text,
-            project_status=project_status_text
+            project_status=project_status_text,
+            constraint_section=pm_constraint_section
         )
 
         try:
-            decision_response = await self.llm.ainvoke(decision_prompt)
+            decision_response = await _llm_retry(self.llm.ainvoke)(decision_prompt)
             decision_str = decision_response.content.strip()
 
             try:
@@ -405,6 +447,23 @@ class ProjectManagerAgent(LLMAgent):
 
                 if decision.get("action_type") == "project_action":
                     decision = await self._handle_project_action(decision)
+
+                # Post-LLM safety net: override if the model still chose to DM
+                # a recipient we're currently waiting on.
+                if (
+                    decision.get("action_type") == "send_message"
+                    and decision.get("recipient") in blocked_recipients
+                ):
+                    logger.warning(
+                        f"ProjectManagerAgent {self.name}: LLM chose to DM '{decision['recipient']}' while still "
+                        f"awaiting their reply — overriding with no_action."
+                    )
+                    decision = {
+                        "action_type": "no_action",
+                        "reason": (
+                            f"Still awaiting a reply from {decision['recipient']}; will not send another DM until they respond."
+                        ),
+                    }
 
                 logger.debug(f"ProjectManagerAgent {self.name} decided on action: {decision.get('action_type')}")
                 return decision

@@ -281,6 +281,28 @@ class Chatroom:
                 await self.agents[message.sender].receive_message(error_message)
             return
         
+        # Check for pending messages to prevent duplicate messaging
+        # Skip this check for RESPONSE messages as they are replies to pending messages
+        sender_agent = self.agents.get(message.sender)
+        if sender_agent and message.message_type != MessageType.RESPONSE:
+            pending = sender_agent.pending_messages.get(message.recipient, set())
+            if pending:
+                logger.warning(f"Agent {message.sender} attempted to send message {message.id} to {message.recipient}, "
+                             f"but has {len(pending)} pending message(s) awaiting response. Message blocked.")
+                # Notify sender of the block
+                error_message = Message(
+                    sender="System",
+                    recipient=message.sender,
+                    message_type=MessageType.ERROR,
+                    content={
+                        "text": f"Cannot send message to {message.recipient}. You have {len(pending)} pending message(s) awaiting response.",
+                        "original_message_id": message.id,
+                        "pending_message_ids": list(pending)
+                    }
+                )
+                await self.agents[message.sender].receive_message(error_message)
+                return
+        
         # Add to message history
         self.messages.append(message)
         if len(self.messages) > self.max_history:

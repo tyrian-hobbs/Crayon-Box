@@ -18,13 +18,20 @@ import datetime
 import json
 import logging
 import os
+import random
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, Callable
 
 from pydantic import BaseModel, Field
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 from langchain_core.language_models import BaseLLM
 from langchain_core.callbacks import CallbackManager
 from langchain_community.vectorstores import Chroma
@@ -43,6 +50,37 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_retryable_api_error(exc: BaseException) -> bool:
+    """
+    Return True for transient API errors that are safe to retry.
+
+    Covers Anthropic 529 (overloaded) and 529-equivalent responses from
+    other providers wrapped by LangChain, as well as common network errors.
+    """
+    msg = str(exc).lower()
+    # Anthropic overloaded_error / HTTP 529
+    if "529" in msg or "overloaded" in msg:
+        return True
+    # Rate-limit responses from any provider
+    if "rate limit" in msg or "rate_limit" in msg or "429" in msg:
+        return True
+    # Transient network / timeout issues
+    if any(t in msg for t in ("timeout", "connection", "503", "502")):
+        return True
+    return False
+
+
+# Tenacity retry decorator for LLM calls.
+# Retries up to 6 times with exponential back-off (2–60 s) plus jitter,
+# only for errors identified as transient by _is_retryable_api_error.
+_llm_retry = retry(
+    retry=retry_if_exception(_is_retryable_api_error),
+    wait=wait_exponential_jitter(initial=2, max=60, jitter=2),
+    stop=stop_after_attempt(6),
+    reraise=True,
+)
 
 
 class AgentStatus(Enum):
@@ -333,6 +371,10 @@ class Agent(ABC):
         self.message_queue = asyncio.Queue()
         self.response_callbacks: Dict[str, Callable] = {}
         self.dispatch_callback = None  # Set by chatroom to route outgoing messages back
+        
+        # Track pending messages to prevent duplicate messages to same agent
+        # Maps recipient agent name -> set of message IDs waiting for response
+        self.pending_messages: Dict[str, Set[str]] = {}
 
         # Pause control — set means running, clear means paused
         self._paused = asyncio.Event()
@@ -405,6 +447,19 @@ class Agent(ABC):
         # Log message receipt
         logger.debug(f"Agent {self.name} received message: {message.id} from {message.sender}")
         
+        # Clear any DMs we sent to this sender that are still awaiting a reply.
+        # We treat *any* incoming message from agent B as their reply (not just
+        # MessageType.RESPONSE) because agents commonly reply with a plain "chat"
+        # message rather than a formal RESPONSE type.  The invariant we enforce is
+        # one unanswered DM per recipient at a time, so receiving anything at all
+        # from B is sufficient to mark our outbound DM as answered.
+        if message.sender in self.pending_messages and self.pending_messages[message.sender]:
+            cleared = self.pending_messages.pop(message.sender)
+            logger.debug(
+                f"Agent {self.name}: cleared {len(cleared)} DM(s) awaiting reply from {message.sender} "
+                f"(reply received — msg {message.id}, type {message.message_type.value})"
+            )
+        
         # Store in memory
         self.memory.add(message)
         
@@ -434,6 +489,17 @@ class Agent(ABC):
             "thread_id": message.thread_id,
         }
         
+        # Expose which agents currently have a DM from us that is still awaiting
+        # their reply, so think() and decide_action() can steer away from
+        # sending another DM before wasting an LLM call on one that can't go out.
+        blocked = [
+            recipient
+            for recipient, pending_ids in self.pending_messages.items()
+            if pending_ids
+        ]
+        if blocked:
+            perception["pending_dm_blocked"] = blocked
+
         # Enhance perception with contextual information
         if message.message_type == MessageType.QUERY:
             # Retrieve relevant context for queries
@@ -441,7 +507,7 @@ class Agent(ABC):
             if query:
                 relevant_context = self.memory.get_relevant_context(query)
                 perception["relevant_context"] = relevant_context
-        
+
         return perception
     
     @abstractmethod
@@ -522,6 +588,19 @@ class Agent(ABC):
         # Update metrics
         self.metrics["messages_sent"] += 1
         
+        # Track pending message if this is a direct message (not a response or broadcast)
+        if recipient and message_type != MessageType.RESPONSE:
+            if recipient not in self.pending_messages:
+                self.pending_messages[recipient] = set()
+            self.pending_messages[recipient].add(message.id)
+            logger.debug(f"Agent {self.name} added message {message.id} to pending messages for {recipient}")
+        
+        # Clear pending message if this is a direct response
+        if recipient and in_reply_to and message_type == MessageType.RESPONSE:
+            if recipient in self.pending_messages:
+                self.pending_messages[recipient].discard(in_reply_to)
+                logger.debug(f"Agent {self.name} cleared pending message {in_reply_to} from {recipient}")
+        
         logger.debug(f"Agent {self.name} sending message: {message.id} to {recipient or 'all'}")
         
         # Dispatch back through the chatroom if a callback is registered
@@ -593,7 +672,13 @@ class Agent(ABC):
         3. Think about the perception
         4. Decide what action to take
         5. Execute the action
+
+        Transient API errors (overloaded, rate-limited) are retried by the
+        _llm_retry decorator inside think() and decide_action().  If retries
+        are exhausted the message is requeued rather than dropped, so the
+        agent will attempt it again after a short back-off delay.
         """
+        message = None
         try:
             # Get a message from the queue
             message = await self.message_queue.get()
@@ -622,8 +707,20 @@ class Agent(ABC):
             # Return the result (will be handled by the environment)
             return result
         except Exception as e:
-            logger.error(f"Error in perception cycle for agent {self.name}: {str(e)}")
             self.metrics["errors_encountered"] += 1
+            if message is not None and _is_retryable_api_error(e):
+                backoff = min(60, 5 * (self.metrics["errors_encountered"] ** 0.5))
+                logger.warning(
+                    f"Agent {self.name}: transient API error, requeueing message "
+                    f"{message.id} after {backoff:.1f}s back-off. Error: {e}"
+                )
+                self.message_queue.task_done()
+                await asyncio.sleep(backoff)
+                await self.message_queue.put(message)
+            else:
+                logger.error(f"Error in perception cycle for agent {self.name}: {e}")
+                if message is not None:
+                    self.message_queue.task_done()
             return None
     
     async def run(self) -> None:
@@ -686,6 +783,49 @@ class Agent(ABC):
             metrics["avg_response_time"] = 0
             
         return metrics
+    
+    def has_pending_message(self, recipient: str) -> bool:
+        """
+        Check if there are pending messages awaiting response from a specific recipient
+        
+        Args:
+            recipient: The name of the recipient to check
+            
+        Returns:
+            True if there are pending messages, False otherwise
+        """
+        return bool(self.pending_messages.get(recipient, set()))
+    
+    def get_pending_message_count(self, recipient: Optional[str] = None) -> int:
+        """
+        Get the number of pending messages
+        
+        Args:
+            recipient: If provided, get count for specific recipient. If None, get total count.
+            
+        Returns:
+            Number of pending messages
+        """
+        if recipient:
+            return len(self.pending_messages.get(recipient, set()))
+        
+        total = 0
+        for pending_set in self.pending_messages.values():
+            total += len(pending_set)
+        return total
+    
+    def get_pending_message_details(self) -> Dict[str, List[str]]:
+        """
+        Get details of all pending messages
+        
+        Returns:
+            Dictionary mapping recipient names to list of pending message IDs
+        """
+        return {
+            recipient: list(pending_ids)
+            for recipient, pending_ids in self.pending_messages.items()
+            if pending_ids
+        }
 
 
 class LLMAgent(Agent):
@@ -717,13 +857,28 @@ class LLMAgent(Agent):
             for m in recent_messages
         ])
         
+        # Build a constraint note for the prompt if any DMs are currently blocked.
+        blocked_recipients = perception.get("pending_dm_blocked", [])
+        if blocked_recipients:
+            blocked_note = (
+                "## Messaging Constraints — Awaiting Reply\n"
+                "You have sent a direct message to the following agent(s) and are still waiting for their reply: "
+                + ", ".join(blocked_recipients)
+                + "\nDo not send them another direct message until they have replied. "
+                "If you still need to reach them, consider a broadcast or wait for their reply."
+            )
+        else:
+            blocked_note = ""
+
         # Create the prompt for thinking
         thinking_template = PromptTemplate(
-            input_variables=["system_prompt", "agent_name", "agent_role", "perception", "recent_messages"],
+            input_variables=["system_prompt", "agent_name", "agent_role", "perception", "recent_messages", "blocked_note"],
             template="""
             {system_prompt}
             
             You are currently processing information as {agent_name}, a {agent_role}.
+            
+            {blocked_note}
             
             ## Recent Messages:
             {recent_messages}
@@ -737,6 +892,7 @@ class LLMAgent(Agent):
             2. How does it relate to your goals and role?
             3. What context from memory is relevant?
             4. What are the implications?
+            5. Are any of your intended actions currently blocked by messaging constraints above?
             
             Provide your thoughts in a structured format.
             """
@@ -748,18 +904,22 @@ class LLMAgent(Agent):
             agent_name=self.name,
             agent_role=self.role,
             perception=perception_text,
-            recent_messages=recent_messages_text
+            recent_messages=recent_messages_text,
+            blocked_note=blocked_note
         )
         
         try:
-            thoughts_response = await self.llm.ainvoke(thinking_prompt)
+            thoughts_response = await _llm_retry(self.llm.ainvoke)(thinking_prompt)
             thoughts_str = thoughts_response.content.strip()
             
-            # Parse thoughts into a structured format
+            # Parse thoughts into a structured format.
+            # Carry the awaiting-reply list forward so decide_action()
+            # can enforce the constraint without re-reading pending_messages.
             thoughts = {
                 "raw": thoughts_str,
                 "timestamp": datetime.datetime.now().timestamp(),
-                "perception_id": perception.get("message_id")
+                "perception_id": perception.get("message_id"),
+                "pending_dm_blocked": perception.get("pending_dm_blocked", []),
             }
             
             logger.debug(f"Agent {self.name} generated thoughts for message {perception.get('message_id')}")
@@ -787,19 +947,39 @@ class LLMAgent(Agent):
         """
         # Format thoughts for the prompt
         thoughts_text = thoughts.get("raw", "")
-        
+
+        # Check for unavailable recipients
+        blocked_recipients = [
+            r for r, ids in self.pending_messages.items() if ids
+        ]
+
         # Get available tools
         tools_text = "\n".join([
             f"- {name}: {tool.description}" for name, tool in self.tools.items()
         ])
-        
+
+        # Build the constraint section for the prompt
+        if blocked_recipients:
+            constraint_section = (
+                "## Messaging Constraint — Awaiting Reply\n"
+                "You have sent a direct message to the following agent(s) and are still "
+                "waiting for their reply: " + ", ".join(blocked_recipients) + ".\n"
+                "Do not choose action_type=\'send_message\' with any of those agents as the "
+                "recipient until they have replied.  If your only useful action would be "
+                "to DM one of them, choose no_action and state the reason."
+            )
+        else:
+            constraint_section = ""
+
         # Create the prompt for decision making
         decision_template = PromptTemplate(
-            input_variables=["system_prompt", "agent_name", "agent_role", "thoughts", "tools"],
+            input_variables=["system_prompt", "agent_name", "agent_role", "thoughts", "tools", "constraint_section"],
             template="""
             {system_prompt}
             
             You are currently deciding on actions as {agent_name}, a {agent_role}.
+
+            {constraint_section}
             
             ## Your Thoughts:
             {thoughts}
@@ -860,11 +1040,12 @@ class LLMAgent(Agent):
             agent_name=self.name,
             agent_role=self.role,
             thoughts=thoughts_text,
-            tools=tools_text
+            tools=tools_text,
+            constraint_section=constraint_section
         )
         
         try:
-            decision_response = await self.llm.ainvoke(decision_prompt)
+            decision_response = await _llm_retry(self.llm.ainvoke)(decision_prompt)
             decision_str = decision_response.content.strip()
             
             # Extract JSON from the response
@@ -876,6 +1057,25 @@ class LLMAgent(Agent):
                     decision_str = json_match.group(1)
                 
                 decision = json.loads(decision_str)
+
+                # Post-LLM safety net: if the model still chose to DM a recipient
+                # whose reply we are awaiting, override with no_action so the
+                # chatroom never sees the premature outbound message.
+                if (
+                    decision.get("action_type") == "send_message"
+                    and decision.get("recipient") in blocked_recipients
+                ):
+                    logger.warning(
+                        f"Agent {self.name}: LLM chose to DM '{decision['recipient']}' while still "
+                        f"awaiting their reply — overriding with no_action."
+                    )
+                    decision = {
+                        "action_type": "no_action",
+                        "reason": (
+                            f"Still awaiting a reply from {decision['recipient']}; will not send another DM until they respond."
+                        ),
+                    }
+
                 logger.debug(f"Agent {self.name} decided on action: {decision.get('action_type')}")
                 return decision
             except json.JSONDecodeError as e:

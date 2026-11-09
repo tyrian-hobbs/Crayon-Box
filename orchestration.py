@@ -173,6 +173,7 @@ class AgentVillage:
                     temperature=config.llm_temperature,
                     max_tokens=config.llm_max_tokens,
                     anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                    max_retries = 3
                 )
             elif provider == "deepseek":
                 from langchain_openai import ChatOpenAI
